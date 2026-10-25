@@ -1,0 +1,151 @@
+name: $(Build.DefinitionName)_$(Date:yyyyMMdd)$(Rev:.r)
+
+trigger:
+  branches:
+    include:
+      - main
+
+pr:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  - name: terraformVersion
+    value: '1.5.7'
+  - name: serviceConnectionName
+    value: 'azure-service-connection'
+  - name: backendResourceGroup
+    value: 'rg-terraform-state-mgmt'
+  - name: backendStorageAccount
+    value: 'sttfstateenterpriseprod'
+  - name: backendContainer
+    value: 'tfstate'
+
+stages:
+  # ========================================================
+  # STAGE 1: Code Quality, Linting & Terraform Validation
+  # ========================================================
+  - stage: Validate
+    displayName: "Stage 1: Lint & Validate"
+    jobs:
+      - job: TerraformValidate
+        displayName: "Terraform Format & Validate"
+        steps:
+          - task: TerraformInstaller@0
+            displayName: "Install Terraform $(terraformVersion)"
+            inputs:
+              terraformVersion: $(terraformVersion)
+
+          - script: |
+              echo "==> Checking Terraform formatting..."
+              terraform fmt -check -recursive
+            displayName: "Terraform Format Check"
+
+          - task: TerraformTaskV4@4
+            displayName: "Terraform Init (Validation)"
+            inputs:
+              provider: 'azurerm'
+              command: 'init'
+              workingDirectory: '$(System.DefaultWorkingDirectory)/environments/dev'
+              backendServiceArm: $(serviceConnectionName)
+              backendAzureRmResourceGroupName: $(backendResourceGroup)
+              backendAzureRmStorageAccountName: $(backendStorageAccount)
+              backendAzureRmContainerName: $(backendContainer)
+              backendAzureRmKey: 'dev.validation.tfstate'
+
+          - task: TerraformTaskV4@4
+            displayName: "Terraform Validate"
+            inputs:
+              provider: 'azurerm'
+              command: 'validate'
+              workingDirectory: '$(System.DefaultWorkingDirectory)/environments/dev'
+
+  # ========================================================
+  # STAGE 2: Development Plan
+  # ========================================================
+  - stage: Dev_Plan
+    displayName: "Stage 2: Plan (Dev)"
+    dependsOn: Validate
+    jobs:
+      - job: PlanDev
+        displayName: "Generate Dev Plan"
+        steps:
+          - template: pipelines/templates/terraform-plan.yml
+            parameters:
+              environment: 'dev'
+              serviceConnection: $(serviceConnectionName)
+              resourceGroup: $(backendResourceGroup)
+              storageAccount: $(backendStorageAccount)
+              container: $(backendContainer)
+              terraformVersion: $(terraformVersion)
+
+  # ========================================================
+  # STAGE 3: Development Apply (Automated)
+  # ========================================================
+  - stage: Dev_Apply
+    displayName: "Stage 3: Apply (Dev)"
+    dependsOn: Dev_Plan
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: ApplyDev
+        displayName: "Deploy to Development"
+        environment: 'development'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - template: pipelines/templates/terraform-apply.yml
+                  parameters:
+                    environment: 'dev'
+                    serviceConnection: $(serviceConnectionName)
+                    resourceGroup: $(backendResourceGroup)
+                    storageAccount: $(backendStorageAccount)
+                    container: $(backendContainer)
+                    terraformVersion: $(terraformVersion)
+
+  # ========================================================
+  # STAGE 4: Production Plan
+  # ========================================================
+  - stage: Prod_Plan
+    displayName: "Stage 4: Plan (Prod)"
+    dependsOn: Dev_Apply
+    jobs:
+      - job: PlanProd
+        displayName: "Generate Prod Plan"
+        steps:
+          - template: pipelines/templates/terraform-plan.yml
+            parameters:
+              environment: 'prod'
+              serviceConnection: $(serviceConnectionName)
+              resourceGroup: $(backendResourceGroup)
+              storageAccount: $(backendStorageAccount)
+              container: $(backendContainer)
+              terraformVersion: $(terraformVersion)
+
+  # ========================================================
+  # STAGE 5: Production Apply (Environment Gate / Approval)
+  # ========================================================
+  - stage: Prod_Apply
+    displayName: "Stage 5: Apply (Prod with Approval Gate)"
+    dependsOn: Prod_Plan
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: ApplyProd
+        displayName: "Deploy to Production"
+        environment: 'production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - template: pipelines/templates/terraform-apply.yml
+                  parameters:
+                    environment: 'prod'
+                    serviceConnection: $(serviceConnectionName)
+                    resourceGroup: $(backendResourceGroup)
+                    storageAccount: $(backendStorageAccount)
+                    container: $(backendContainer)
+                    terraformVersion: $(terraformVersion)

@@ -1,0 +1,48 @@
+parameters:
+  - name: environment
+    type: string
+  - name: serviceConnection
+    type: string
+  - name: resourceGroup
+    type: string
+  - name: storageAccount
+    type: string
+  - name: container
+    type: string
+  - name: terraformVersion
+    type: string
+    default: '1.5.7'
+
+steps:
+  - task: TerraformInstaller@0
+    displayName: "Install Terraform ${{ parameters.terraformVersion }}"
+    inputs:
+      terraformVersion: ${{ parameters.terraformVersion }}
+
+  - task: TerraformTaskV4@4
+    displayName: "Terraform Init (${{ parameters.environment }})"
+    inputs:
+      provider: 'azurerm'
+      command: 'init'
+      workingDirectory: '$(System.DefaultWorkingDirectory)/environments/${{ parameters.environment }}'
+      backendServiceArm: ${{ parameters.serviceConnection }}
+      backendAzureRmResourceGroupName: ${{ parameters.resourceGroup }}
+      backendAzureRmStorageAccountName: ${{ parameters.storageAccount }}
+      backendAzureRmContainerName: ${{ parameters.container }}
+      backendAzureRmKey: '${{ parameters.environment }}.terraform.tfstate'
+
+  - task: TerraformTaskV4@4
+    displayName: "Terraform Plan (${{ parameters.environment }})"
+    inputs:
+      provider: 'azurerm'
+      command: 'plan'
+      workingDirectory: '$(System.DefaultWorkingDirectory)/environments/${{ parameters.environment }}'
+      environmentServiceNameAzureRM: ${{ parameters.serviceConnection }}
+      commandOptions: '-out=$(Build.ArtifactStagingDirectory)/${{ parameters.environment }}.tfplan'
+
+  - task: PublishBuildArtifacts@1
+    displayName: "Publish ${{ parameters.environment }} Plan Artifact"
+    inputs:
+      PathtoPublish: '$(Build.ArtifactStagingDirectory)/${{ parameters.environment }}.tfplan'
+      ArtifactName: 'tfplan-${{ parameters.environment }}'
+      publishLocation: 'Container'
